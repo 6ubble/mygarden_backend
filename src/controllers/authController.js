@@ -9,7 +9,6 @@ class AppError extends Error {
     }
 }
 
-// === Регистрация ===
 exports.register = async (req, res, next) => {
     try {
         const { email, password, name } = req.body;
@@ -39,12 +38,11 @@ exports.register = async (req, res, next) => {
             name 
         });
         
-        // ✅ Отправляем токен в httpOnly cookie
         res.cookie('authToken', token, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
             sameSite: 'lax',
-            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 дней
+            maxAge: 7 * 24 * 60 * 60 * 1000,
             path: '/'
         });
 
@@ -60,7 +58,6 @@ exports.register = async (req, res, next) => {
     }
 };
 
-// === Вход ===
 exports.login = async (req, res, next) => {
     try {
         const { email, password } = req.body;
@@ -91,7 +88,6 @@ exports.login = async (req, res, next) => {
             name: user.name 
         });
 
-        // ✅ Отправляем токен в httpOnly cookie
         res.cookie('authToken', token, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
@@ -112,7 +108,6 @@ exports.login = async (req, res, next) => {
     }
 };
 
-// === Получить профиль ===
 exports.getProfile = async (req, res, next) => {
     try {
         const [users] = await pool.query(
@@ -132,10 +127,8 @@ exports.getProfile = async (req, res, next) => {
     }
 };
 
-// === Выход ===
 exports.logout = async (req, res, next) => {
     try {
-        // ✅ Очищаем cookie
         res.clearCookie('authToken', {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
