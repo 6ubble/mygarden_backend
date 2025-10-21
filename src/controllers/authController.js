@@ -2,99 +2,149 @@ const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 const { generateToken } = require('../utils/generateToken');
 
+class AppError extends Error {
+    constructor(message, statusCode) {
+        super(message);
+        this.statusCode = statusCode;
+    }
+}
+
 // === Регистрация ===
 exports.register = async (req, res, next) => {
-  try {
-    const { email, password, name } = req.body;
+    try {
+        const { email, password, name } = req.body;
 
-    if (!email || !password || !name) {
-      throw new AppError('Все поля обязательны', 400);
+        if (!email || !password || !name) {
+            throw new AppError('Все поля обязательны', 400);
+        }
+
+        const [existing] = await pool.query(
+            'SELECT id FROM users WHERE email = ?', 
+            [email]
+        );
+        
+        if (existing.length > 0) {
+            throw new AppError('Email уже используется', 409);
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const [result] = await pool.query(
+            'INSERT INTO users (email, password, name, created_at) VALUES (?, ?, ?, NOW())',
+            [email, hashedPassword, name]
+        );
+
+        const token = generateToken({ 
+            id: result.insertId, 
+            email, 
+            name 
+        });
+        
+        // ✅ Отправляем токен в httpOnly cookie
+        res.cookie('authToken', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000, // 7 дней
+            path: '/'
+        });
+
+        res.status(201).json({
+            user: { 
+                id: result.insertId, 
+                email, 
+                name 
+            }
+        });
+    } catch (error) {
+        next(error);
     }
-
-    const [existing] = await pool.query('SELECT id FROM users WHERE email = ?', [email]);
-    if (existing.length > 0) {
-      throw new AppError('Email уже используется', 409);
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const [result] = await pool.query(
-      'INSERT INTO users (email, password, name, created_at) VALUES (?, ?, ?, NOW())',
-      [email, hashedPassword, name]
-    );
-
-    const token = generateToken({ id: result.insertId, email, name });
-    
-    res.status(201).json({
-      token,
-      user: { 
-        id: result.insertId, 
-        email, 
-        name 
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
 };
 
 // === Вход ===
 exports.login = async (req, res, next) => {
-  try {
-    const { email, password } = req.body;
+    try {
+        const { email, password } = req.body;
 
-    if (!email || !password) {
-      throw new AppError('Email и пароль обязательны', 400);
+        if (!email || !password) {
+            throw new AppError('Email и пароль обязательны', 400);
+        }
+
+        const [users] = await pool.query(
+            'SELECT * FROM users WHERE email = ?', 
+            [email]
+        );
+        
+        if (users.length === 0) {
+            throw new AppError('Неверный email или пароль', 401);
+        }
+
+        const user = users[0];
+        const isValid = await bcrypt.compare(password, user.password);
+        
+        if (!isValid) {
+            throw new AppError('Неверный email или пароль', 401);
+        }
+
+        const token = generateToken({ 
+            id: user.id, 
+            email: user.email, 
+            name: user.name 
+        });
+
+        // ✅ Отправляем токен в httpOnly cookie
+        res.cookie('authToken', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+            path: '/'
+        });
+
+        res.json({
+            user: { 
+                id: user.id, 
+                email: user.email, 
+                name: user.name 
+            }
+        });
+    } catch (error) {
+        next(error);
     }
-
-    const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
-    if (users.length === 0) {
-      throw new AppError('Неверный email или пароль', 401);
-    }
-
-    const user = users[0];
-    const isValid = await bcrypt.compare(password, user.password);
-    if (!isValid) {
-      throw new AppError('Неверный email или пароль', 401);
-    }
-
-    const token = generateToken({ id: user.id, email: user.email, name: user.name });
-
-    res.json({
-      token,
-      user: { 
-        id: user.id, 
-        email: user.email, 
-        name: user.name 
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
 };
 
-// === Профиль (новый эндпоинт) ===
+// === Получить профиль ===
 exports.getProfile = async (req, res, next) => {
-  try {
-    const [users] = await pool.query(
-      'SELECT id, email, name, created_at FROM users WHERE id = ?',
-      [req.user.id]
-    );
+    try {
+        const [users] = await pool.query(
+            'SELECT id, email, name, created_at FROM users WHERE id = ?',
+            [req.user.id]
+        );
 
-    if (users.length === 0) {
-      throw new AppError('Пользователь не найден', 404);
+        if (users.length === 0) {
+            throw new AppError('Пользователь не найден', 404);
+        }
+
+        res.json({ 
+            user: users[0] 
+        });
+    } catch (error) {
+        next(error);
     }
-
-    res.json(users[0]);
-  } catch (error) {
-    next(error);
-  }
 };
 
 // === Выход ===
 exports.logout = async (req, res, next) => {
-  try {
-    res.json({ message: 'Выход выполнен успешно' });
-  } catch (error) {
-    next(error);
-  }
+    try {
+        // ✅ Очищаем cookie
+        res.clearCookie('authToken', {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
+            path: '/'
+        });
+
+        res.json({ message: 'Выход выполнен успешно' });
+    } catch (error) {
+        next(error);
+    }
 };
