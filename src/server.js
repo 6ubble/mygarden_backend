@@ -5,7 +5,6 @@ require('dotenv').config();
 
 const app = express();
 
-// ✅ Middleware
 app.use(cors({
     origin: process.env.FRONTEND_URL || 'http://localhost:5173',
     credentials: true
@@ -14,11 +13,9 @@ app.use(cors({
 app.use(cookieParser());
 app.use(express.json());
 
-// Импорт маршрутов
 const authRoutes = require('./routes/authRoutes');
 app.use('/auth', authRoutes);
 
-// === Глобальная обработка ошибок ===
 app.use((err, req, res, next) => {
     console.error(err);
     

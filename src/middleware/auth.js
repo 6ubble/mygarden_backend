@@ -4,7 +4,6 @@ require('dotenv').config();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
 const authenticateToken = (req, res, next) => {
-    // ✅ Берем токен из cookie вместо Authorization header
     const token = req.cookies?.authToken;
 
     if (!token) {
