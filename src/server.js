@@ -14,7 +14,10 @@ app.use(cookieParser());
 app.use(express.json());
 
 const authRoutes = require('./routes/authRoutes');
+const weatherRoutes = require('./routes/weatherRoutes');
+
 app.use('/auth', authRoutes);
+app.use('/api', weatherRoutes);
 
 app.use((err, req, res, next) => {
     console.error(err);
