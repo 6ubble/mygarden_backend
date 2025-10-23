@@ -16,12 +16,14 @@ app.use(express.json());
 const authRoutes = require('./routes/authRoutes');
 const weatherRoutes = require('./routes/weatherRoutes');
 const pushRoutes = require('./routes/pushRoutes');
+const notificationsRoutes = require('./routes/notificationsRoutes');
 const { stopAllSchedules } = require('./controllers/weatherController');
 const { stopAllAlertsSchedules } = require('./controllers/weatherAlertsController');
 
 app.use('/auth', authRoutes);
 app.use('/api', weatherRoutes);
 app.use('/api/push', pushRoutes);
+app.use('/api/notifications', notificationsRoutes);
 
 app.use((err, req, res, next) => {
     console.error(err);
@@ -51,8 +53,7 @@ const handleShutdown = () => {
     console.log('\n🛑 Получен сигнал завершения, закрытие сервера...');
     
     stopAllSchedules();
-    stopAllFrostSchedules();
-    stopAllWateringSchedules();
+    stopAllAlertsSchedules();
     
     server.close(() => {
         console.log('✅ Сервер успешно закрыт');

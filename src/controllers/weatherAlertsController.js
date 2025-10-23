@@ -2,12 +2,13 @@ const axios = require('axios');
 const cron = require('node-cron');
 const webpush = require('web-push');
 const { getSubscriptionsByCoordinates } = require('../models/pushSubscriptionModel');
+const { saveNotification } = require('../models/notificationsModel');
 const { getTomorrowNightInLocalTimezone, convertToLocalTime, getTimezoneByCoordinates } = require('../utils/timezoneUtils');
 const { checkHeatWarning, checkRainWarning, getWateringRecommendation } = require('../utils/weatherAlertsUtils');
 require('dotenv').config();
 
 const OPENWEATHER_API_KEY = process.env.OPENWEATHER_API_KEY;
-const FROST_THRESHOLD = 0;
+const FROST_THRESHOLD = 10;
 
 // Кэш для всех alert'ов
 const alertsCache = new Map();
@@ -163,7 +164,8 @@ const sendAllNotifications = async (alerts, lat, lon) => {
                 title: `🧊 Заморозки в ${alerts.city}!`,
                 body: `В ${alerts.frost.time} температура упадет до ${alerts.frost.temp}°C. Защитите растения!`,
                 tag: 'frost-alert',
-                requireInteraction: true
+                requireInteraction: true,
+                type: 'frost'
             });
         }
 
@@ -172,7 +174,8 @@ const sendAllNotifications = async (alerts, lat, lon) => {
                 title: `${alerts.watering.emoji} Рекомендация по поливу`,
                 body: alerts.watering.recommendation,
                 tag: 'watering-alert',
-                requireInteraction: false
+                requireInteraction: false,
+                type: alerts.rain.isRain ? 'rain' : (alerts.heat.isHeat ? 'heat' : 'watering')
             });
         }
 
@@ -182,6 +185,8 @@ const sendAllNotifications = async (alerts, lat, lon) => {
 
         for (const sub of subscriptions) {
             try {
+                console.log(`📌 Обработка подписки user_id: ${sub.user_id}`);
+                
                 const parsedSubscription = typeof sub.subscription === 'string'
                     ? JSON.parse(sub.subscription)
                     : sub.subscription;
@@ -190,12 +195,29 @@ const sendAllNotifications = async (alerts, lat, lon) => {
                     await webpush.sendNotification(
                         parsedSubscription,
                         JSON.stringify({
-                            ...notif,
+                            title: notif.title,
+                            body: notif.body,
                             icon: '/garden-icon.png',
                             badge: '/garden-badge.png',
+                            tag: notif.tag,
+                            requireInteraction: notif.requireInteraction,
                             data: { city: alerts.city }
                         })
                     );
+
+                    // Сохраняем в БД для каждого пользователя
+                    if (sub.user_id) {
+                        console.log(`💾 Сохраняю уведомление для user_id: ${sub.user_id}`);
+                        await saveNotification(
+                            sub.user_id,
+                            notif.title,
+                            notif.body,
+                            notif.type,
+                            { city: alerts.city }
+                        );
+                    } else {
+                        console.log(`⚠️ user_id не найден в подписке!`);
+                    }
                 }
                 sent += notifications.length;
             } catch (error) {
@@ -274,6 +296,30 @@ exports.getAllAlerts = async (req, res, next) => {
         res.json({
             ...alerts,
             fromCache: false
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// ТЕСТОВЫЙ эндпоинт - отправить alert'ы сразу (для разработки)
+exports.testAlert = async (req, res, next) => {
+    try {
+        const { latitude, longitude } = req.body;
+
+        if (!latitude || !longitude) {
+            throw new AppError('Координаты обязательны', 400);
+        }
+
+        const lat = parseFloat(latitude);
+        const lon = parseFloat(longitude);
+
+        console.log(`🧪 ТЕСТОВЫЙ ЗАПРОС alert'ов для ${lat}, ${lon}`);
+        const alerts = await checkAndNotifyAllAlerts(lat, lon);
+
+        res.json({
+            message: 'Alert\'ы отправлены (тестовый режим)',
+            alerts
         });
     } catch (error) {
         next(error);
