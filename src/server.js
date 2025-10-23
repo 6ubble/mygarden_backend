@@ -17,8 +17,7 @@ const authRoutes = require('./routes/authRoutes');
 const weatherRoutes = require('./routes/weatherRoutes');
 const pushRoutes = require('./routes/pushRoutes');
 const { stopAllSchedules } = require('./controllers/weatherController');
-const { stopAllFrostSchedules } = require('./controllers/frostAlertController');
-const { stopAllWateringSchedules } = require('./controllers/wateringAlertController');
+const { stopAllAlertsSchedules } = require('./controllers/weatherAlertsController');
 
 app.use('/auth', authRoutes);
 app.use('/api', weatherRoutes);

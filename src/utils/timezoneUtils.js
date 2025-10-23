@@ -1,5 +1,5 @@
 const moment = require('moment-timezone');
-const tzlookup = require('tzlookup').default;  // 🔑 Добавь .default
+const geoTz = require('geo-tz');
 
 /**
  * Получить часовой пояс по координатам
@@ -9,8 +9,17 @@ const tzlookup = require('tzlookup').default;  // 🔑 Добавь .default
  */
 const getTimezoneByCoordinates = (latitude, longitude) => {
     try {
-        const timezone = tzlookup(latitude, longitude);
-        return timezone || 'UTC';
+        // geo-tz.find() возвращает массив или undefined
+        const timezone = geoTz.find(latitude, longitude);
+        
+        if (Array.isArray(timezone) && timezone.length > 0) {
+            return timezone[0];
+        } else if (typeof timezone === 'string') {
+            return timezone;
+        }
+        
+        console.warn(`⚠️ geo-tz вернул неожиданный результат: ${timezone}`);
+        return 'UTC';
     } catch (error) {
         console.warn(`⚠️ Ошибка при определении часового пояса: ${error.message}, используем UTC`);
         return 'UTC';

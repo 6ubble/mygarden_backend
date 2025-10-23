@@ -1,7 +1,7 @@
 const axios = require('axios');
 const cron = require('node-cron');
 const moment = require('moment-timezone');
-const tzlookup = require('tzlookup');
+const geoTz = require('geo-tz');
 require('dotenv').config();
 
 const OPENWEATHER_API_KEY = process.env.OPENWEATHER_API_KEY;
