@@ -2,7 +2,6 @@ const webpush = require('web-push');
 const { savePushSubscription, deleteSubscription } = require('../models/pushSubscriptionModel');
 require('dotenv').config();
 
-// Установи VAPID ключи (см. ниже как их получить)
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
 
@@ -21,19 +20,37 @@ class AppError extends Error {
     }
 }
 
-// Сохранить push подписку
+const validateSubscription = (subscription) => {
+    return subscription && 
+           subscription.endpoint && 
+           subscription.keys && 
+           subscription.keys.p256dh && 
+           subscription.keys.auth;
+};
+
 exports.subscribePush = async (req, res, next) => {
     try {
         const { subscription, latitude, longitude } = req.body;
         const userId = req.user.id;
 
-        if (!subscription || !subscription.endpoint) {
+        if (!subscription) {
+            throw new AppError('Подписка обязательна', 400);
+        }
+
+        if (!validateSubscription(subscription)) {
             throw new AppError('Некорректная подписка', 400);
         }
 
-        await savePushSubscription(userId, subscription, latitude, longitude);
+        const lat = parseFloat(latitude);
+        const lon = parseFloat(longitude);
 
-        res.json({ 
+        if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+            throw new AppError('Некорректные координаты', 400);
+        }
+
+        await savePushSubscription(userId, subscription, lat, lon);
+
+        res.status(201).json({ 
             message: 'Push подписка сохранена',
             subscribed: true 
         });
@@ -42,17 +59,16 @@ exports.subscribePush = async (req, res, next) => {
     }
 };
 
-// Отправить тестовое уведомление
 exports.sendTestNotification = async (req, res, next) => {
     try {
-        const subscription = req.body.subscription;
+        const { subscription } = req.body;
 
-        if (!subscription || !subscription.endpoint) {
+        if (!validateSubscription(subscription)) {
             throw new AppError('Некорректная подписка', 400);
         }
 
         const notification = {
-            title: '🧪 Тестовое уведомление',
+            title: 'Тестовое уведомление',
             body: 'Push уведомления работают!',
             icon: '/garden-icon.png',
             badge: '/garden-badge.png'
@@ -63,19 +79,15 @@ exports.sendTestNotification = async (req, res, next) => {
             JSON.stringify(notification)
         );
 
-        console.log('✅ Тестовое уведомление отправлено');
         res.json({ message: 'Уведомление отправлено' });
     } catch (error) {
         if (error.statusCode === 410) {
-            // Подписка больше не валидна
-            console.log('🗑️ Подписка истекла, удаляем');
-            // Можно удалить из БД
+            return res.status(410).json({ message: 'Подписка истекла' });
         }
         next(error);
     }
 };
 
-// Получить VAPID публичный ключ
 exports.getVapidPublicKey = (req, res) => {
     if (!vapidPublicKey) {
         return res.status(500).json({ 
@@ -83,9 +95,5 @@ exports.getVapidPublicKey = (req, res) => {
         });
     }
 
-    res.json({ 
-        vapidPublicKey 
-    });
+    res.json({ vapidPublicKey });
 };
-
-module.exports.webpush = webpush;

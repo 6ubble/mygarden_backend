@@ -9,6 +9,15 @@ class AppError extends Error {
     }
 }
 
+const validateEmail = (email) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+};
+
+const validatePassword = (password) => {
+    return password && password.length >= 8;
+};
+
 exports.register = async (req, res, next) => {
     try {
         const { email, password, name } = req.body;
@@ -17,9 +26,21 @@ exports.register = async (req, res, next) => {
             throw new AppError('Все поля обязательны', 400);
         }
 
+        if (!validateEmail(email)) {
+            throw new AppError('Некорректный email', 400);
+        }
+
+        if (!validatePassword(password)) {
+            throw new AppError('Пароль должен быть минимум 8 символов', 400);
+        }
+
+        if (name.length < 2 || name.length > 50) {
+            throw new AppError('Имя должно быть от 2 до 50 символов', 400);
+        }
+
         const [existing] = await pool.query(
             'SELECT id FROM users WHERE email = ?', 
-            [email]
+            [email.toLowerCase()]
         );
         
         if (existing.length > 0) {
@@ -29,19 +50,19 @@ exports.register = async (req, res, next) => {
         const hashedPassword = await bcrypt.hash(password, 10);
         const [result] = await pool.query(
             'INSERT INTO users (email, password, name, created_at) VALUES (?, ?, ?, NOW())',
-            [email, hashedPassword, name]
+            [email.toLowerCase(), hashedPassword, name.trim()]
         );
 
         const token = generateToken({ 
             id: result.insertId, 
-            email, 
+            email: email.toLowerCase(), 
             name 
         });
         
         res.cookie('authToken', token, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
-            sameSite: 'lax',
+            sameSite: 'strict',
             maxAge: 7 * 24 * 60 * 60 * 1000,
             path: '/'
         });
@@ -49,7 +70,7 @@ exports.register = async (req, res, next) => {
         res.status(201).json({
             user: { 
                 id: result.insertId, 
-                email, 
+                email: email.toLowerCase(), 
                 name 
             }
         });
@@ -68,7 +89,7 @@ exports.login = async (req, res, next) => {
 
         const [users] = await pool.query(
             'SELECT * FROM users WHERE email = ?', 
-            [email]
+            [email.toLowerCase()]
         );
         
         if (users.length === 0) {
@@ -91,7 +112,7 @@ exports.login = async (req, res, next) => {
         res.cookie('authToken', token, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
-            sameSite: 'lax',
+            sameSite: 'strict',
             maxAge: 7 * 24 * 60 * 60 * 1000,
             path: '/'
         });
@@ -132,7 +153,7 @@ exports.logout = async (req, res, next) => {
         res.clearCookie('authToken', {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
-            sameSite: 'lax',
+            sameSite: 'strict',
             path: '/'
         });
 

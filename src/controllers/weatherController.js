@@ -1,15 +1,16 @@
 const axios = require('axios');
 const cron = require('node-cron');
-const moment = require('moment-timezone');
-const geoTz = require('geo-tz');
+const { getTimezoneByCoordinates } = require('../utils/timezoneUtils');
 require('dotenv').config();
 
 const OPENWEATHER_API_KEY = process.env.OPENWEATHER_API_KEY;
+const WEATHER_CACHE_TTL = 60 * 60 * 1000;
 
-// Кэш в памяти сервера с информацией о времени последнего обновления
+if (!OPENWEATHER_API_KEY) {
+    console.error('OPENWEATHER_API_KEY не установлен в .env');
+}
+
 const weatherCache = new Map();
-
-// Активные cron задачи (чтобы их можно было остановить)
 const cronTasks = new Map();
 
 class AppError extends Error {
@@ -19,7 +20,6 @@ class AppError extends Error {
     }
 }
 
-// Функция для запроса погоды у OpenWeatherMap
 const fetchFromOpenWeatherMap = async (lat, lon) => {
     try {
         const response = await axios.get(
@@ -57,7 +57,6 @@ const fetchFromOpenWeatherMap = async (lat, lon) => {
     }
 };
 
-// Функция для запуска запроса и сохранения в кэш
 const updateWeatherCache = async (lat, lon) => {
     try {
         const cacheKey = `${Math.round(lat * 100) / 100},${Math.round(lon * 100) / 100}`;
@@ -67,37 +66,30 @@ const updateWeatherCache = async (lat, lon) => {
             data: weatherData,
             timestamp: Date.now()
         });
-        
-        console.log(`✅ Погода обновлена для ${cacheKey} в ${new Date().toLocaleTimeString('ru-RU')}`);
     } catch (error) {
-        console.error(`❌ Ошибка при обновлении погоды: ${error.message}`);
+        console.error(`Ошибка при обновлении погоды: ${error.message}`);
     }
 };
 
-// Функция для планирования обновлений погоды
 const scheduleWeatherUpdates = (lat, lon) => {
     const cacheKey = `${Math.round(lat * 100) / 100},${Math.round(lon * 100) / 100}`;
     
-    // Если задача уже существует, не создаём дубликат
     if (cronTasks.has(cacheKey)) {
         return;
     }
 
-    // Запуск в 6:00, 12:00, 18:00, 24:00 (00:00) по местному времени
+    const timezone = getTimezoneByCoordinates(lat, lon);
     const cronExpression = '0 6,12,18,0 * * *';
     
     const task = cron.schedule(cronExpression, async () => {
         await updateWeatherCache(lat, lon);
-    });
+    }, { timezone });
 
     cronTasks.set(cacheKey, task);
-    console.log(`📅 Планировщик запущен для ${cacheKey}`);
     
-    // Также делаем первый запрос сразу при подключении
     updateWeatherCache(lat, lon);
 };
 
-// Остановка планировщика для координат
 const stopWeatherSchedule = (lat, lon) => {
     const cacheKey = `${Math.round(lat * 100) / 100},${Math.round(lon * 100) / 100}`;
     
@@ -105,41 +97,26 @@ const stopWeatherSchedule = (lat, lon) => {
         const task = cronTasks.get(cacheKey);
         task.stop();
         cronTasks.delete(cacheKey);
-        console.log(`🛑 Планировщик остановлен для ${cacheKey}`);
     }
 };
 
 exports.getWeather = async (req, res, next) => {
     try {
-        const { latitude, longitude } = req.query;
-
-        // Валидация координат
-        if (!latitude || !longitude) {
-            throw new AppError('Координаты обязательны', 400);
-        }
-
-        const lat = parseFloat(latitude);
-        const lon = parseFloat(longitude);
-
-        if (isNaN(lat) || isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-            throw new AppError('Некорректные координаты', 400);
-        }
+        const lat = req.latitude;
+        const lon = req.longitude;
 
         const cacheKey = `${Math.round(lat * 100) / 100},${Math.round(lon * 100) / 100}`;
         
-        // Проверяем кэш
         if (weatherCache.has(cacheKey)) {
             const cached = weatherCache.get(cacheKey);
-            console.log(`📦 Погода из кэша для ${cacheKey}`);
-            
-            return res.json({
-                ...cached.data,
-                fromCache: true
-            });
+            if (Date.now() - cached.timestamp < WEATHER_CACHE_TTL) {
+                return res.json({
+                    ...cached.data,
+                    fromCache: true
+                });
+            }
         }
 
-        // Если кэша нет, запрашиваем и сохраняем
-        console.log(`🌐 Первый запрос погоды для ${cacheKey}`);
         const weatherData = await fetchFromOpenWeatherMap(lat, lon);
         
         weatherCache.set(cacheKey, {
@@ -147,7 +124,6 @@ exports.getWeather = async (req, res, next) => {
             timestamp: Date.now()
         });
 
-        // Запускаем планировщик для этих координат
         scheduleWeatherUpdates(lat, lon);
 
         res.json({
@@ -160,13 +136,11 @@ exports.getWeather = async (req, res, next) => {
     }
 };
 
-// Очистка и остановка всех планировщиков при выключении сервера
 exports.stopAllSchedules = () => {
     cronTasks.forEach((task) => {
         task.stop();
     });
     cronTasks.clear();
-    console.log('🛑 Все планировщики остановлены');
 };
 
 exports.stopWeatherSchedule = stopWeatherSchedule;

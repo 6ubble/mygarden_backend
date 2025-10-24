@@ -2,18 +2,15 @@ const axios = require('axios');
 const cron = require('node-cron');
 const webpush = require('web-push');
 const { getSubscriptionsByCoordinates } = require('../models/pushSubscriptionModel');
-const { saveNotification } = require('../models/notificationsModel');
-const { getTomorrowNightInLocalTimezone, convertToLocalTime, getTimezoneByCoordinates } = require('../utils/timezoneUtils');
+const { saveNotificationsBatch } = require('../models/notificationsModel');
+const { getTimezoneByCoordinates, convertToLocalTime } = require('../utils/timezoneUtils');
 const { checkHeatWarning, checkRainWarning, getWateringRecommendation } = require('../utils/weatherAlertsUtils');
 require('dotenv').config();
 
 const OPENWEATHER_API_KEY = process.env.OPENWEATHER_API_KEY;
 const FROST_THRESHOLD = 10;
 
-// Кэш для всех alert'ов
 const alertsCache = new Map();
-
-// Активные cron задачи
 const alertsCronTasks = new Map();
 
 class AppError extends Error {
@@ -23,12 +20,10 @@ class AppError extends Error {
     }
 }
 
-// ЕДИНЫЙ запрос для всех alert'ов
 const fetchAllAlertsData = async (lat, lon) => {
     try {
         const timezone = getTimezoneByCoordinates(lat, lon);
 
-        // Один запрос вместо трёх!
         const response = await axios.get(
             `https://api.openweathermap.org/data/2.5/forecast`,
             {
@@ -43,17 +38,14 @@ const fetchAllAlertsData = async (lat, lon) => {
             }
         );
 
-        // Вычисляем время завтрашней ночи и дня
         const now = new Date();
         
-        // Ночь: 00:00 - 06:00
         const nightStart = new Date(now);
         nightStart.setDate(nightStart.getDate() + 1);
         nightStart.setHours(0, 0, 0, 0);
         const nightEnd = new Date(nightStart);
         nightEnd.setHours(6, 0, 0, 0);
         
-        // Весь день: 00:00 - 23:59
         const dayStart = new Date(nightStart);
         const dayEnd = new Date(dayStart);
         dayEnd.setHours(23, 59, 59, 999);
@@ -63,7 +55,6 @@ const fetchAllAlertsData = async (lat, lon) => {
         const dayStartUnix = Math.floor(dayStart.getTime() / 1000);
         const dayEndUnix = Math.floor(dayEnd.getTime() / 1000);
 
-        // Фильтруем данные
         const nightForecasts = response.data.list.filter(item => 
             item.dt >= nightStartUnix && item.dt <= nightEndUnix
         );
@@ -76,13 +67,11 @@ const fetchAllAlertsData = async (lat, lon) => {
             return null;
         }
 
-        // ======== ЗАМОРОЗКИ (ночь) ========
         const coldestHour = nightForecasts.reduce((coldest, current) => {
             return current.main.temp < coldest.main.temp ? current : coldest;
         });
         const frostLocalTime = convertToLocalTime(coldestHour.dt, lat, lon, 'HH:mm');
 
-        // ======== ЖАРА И ДОЖДЬ (день) ========
         const heat = checkHeatWarning(dayForecasts);
         const rain = checkRainWarning(dayForecasts);
         const wateringRec = getWateringRecommendation(heat, rain);
@@ -92,7 +81,6 @@ const fetchAllAlertsData = async (lat, lon) => {
             timezone,
             timestamp: Date.now(),
             
-            // Заморозки
             frost: {
                 temp: Math.round(coldestHour.main.temp),
                 time: frostLocalTime,
@@ -101,140 +89,121 @@ const fetchAllAlertsData = async (lat, lon) => {
                 humidity: coldestHour.main.humidity
             },
 
-            // Жара и дождь
             heat,
             rain,
             watering: wateringRec
         };
     } catch (error) {
-        console.error(`❌ Ошибка при запросе alert'ов: ${error.message}`);
+        console.error(`Ошибка при запросе alert'ов: ${error.message}`);
         throw error;
     }
 };
 
-// Проверка и отправка всех alert'ов
+const sendAllNotifications = async (alerts, lat, lon) => {
+    try {
+        const subscriptions = await getSubscriptionsByCoordinates(lat, lon, 2);
+
+        if (subscriptions.length === 0) {
+            return;
+        }
+
+        const notificationsToSave = [];
+        const pushPromises = [];
+
+        for (const sub of subscriptions) {
+            try {
+                const parsedSubscription = typeof sub.subscription === 'string'
+                    ? JSON.parse(sub.subscription)
+                    : sub.subscription;
+
+                if (alerts.frost.isFrost) {
+                    const pushData = {
+                        title: `Заморозки в ${alerts.city}!`,
+                        body: `В ${alerts.frost.time} температура упадет до ${alerts.frost.temp}°C. Защитите растения!`,
+                        icon: '/garden-icon.png',
+                        badge: '/garden-badge.png',
+                        tag: 'frost-alert',
+                        requireInteraction: true,
+                        data: { city: alerts.city }
+                    };
+
+                    pushPromises.push(
+                        webpush.sendNotification(parsedSubscription, JSON.stringify(pushData))
+                            .catch(err => {
+                                if (err.statusCode !== 410) throw err;
+                            })
+                    );
+
+                    notificationsToSave.push({
+                        userId: sub.user_id,
+                        title: pushData.title,
+                        body: pushData.body,
+                        type: 'frost',
+                        data: { city: alerts.city }
+                    });
+                }
+
+                if (alerts.watering.recommendation) {
+                    const pushData = {
+                        title: `Рекомендация по поливу`,
+                        body: alerts.watering.recommendation,
+                        icon: '/garden-icon.png',
+                        badge: '/garden-badge.png',
+                        tag: 'watering-alert',
+                        requireInteraction: false,
+                        data: { city: alerts.city }
+                    };
+
+                    pushPromises.push(
+                        webpush.sendNotification(parsedSubscription, JSON.stringify(pushData))
+                            .catch(err => {
+                                if (err.statusCode !== 410) throw err;
+                            })
+                    );
+
+                    notificationsToSave.push({
+                        userId: sub.user_id,
+                        title: pushData.title,
+                        body: pushData.body,
+                        type: alerts.rain.isRain ? 'rain' : (alerts.heat.isHeat ? 'heat' : 'watering'),
+                        data: { city: alerts.city }
+                    });
+                }
+            } catch (error) {
+                console.error('Ошибка при обработке подписки:', error.message);
+            }
+        }
+
+        await Promise.all(pushPromises);
+        if (notificationsToSave.length > 0) {
+            await saveNotificationsBatch(notificationsToSave);
+        }
+
+    } catch (error) {
+        console.error(`Ошибка при отправке уведомлений: ${error.message}`);
+    }
+};
+
 const checkAndNotifyAllAlerts = async (lat, lon) => {
     try {
         const cacheKey = `${Math.round(lat * 100) / 100},${Math.round(lon * 100) / 100}`;
         const alerts = await fetchAllAlertsData(lat, lon);
 
         if (!alerts) {
-            console.log(`⚠️ Нет прогноза для ${cacheKey}`);
             return null;
         }
 
         alertsCache.set(cacheKey, alerts);
 
-        // Логирование
-        if (alerts.frost.isFrost) {
-            console.log(`🧊 ЗАМОРОЗКИ: В ${alerts.city} ночью ${alerts.frost.time} температура ${alerts.frost.temp}°C`);
-        }
-
-        if (alerts.rain.isRain) {
-            console.log(`🌧️ ДОЖДЬ: В ${alerts.city} завтра ${alerts.rain.totalRain}мм осадков`);
-        } else if (alerts.heat.isHeat) {
-            console.log(`☀️ ЖАРА: В ${alerts.city} завтра до ${alerts.heat.maxTemp}°C`);
-        }
-
-        // Отправляем все уведомления пакетом
         await sendAllNotifications(alerts, lat, lon);
 
         return alerts;
     } catch (error) {
-        console.error(`❌ Ошибка при проверке alert'ов: ${error.message}`);
+        console.error(`Ошибка при проверке alert'ов: ${error.message}`);
         throw error;
     }
 };
 
-// Отправка всех уведомлений
-const sendAllNotifications = async (alerts, lat, lon) => {
-    try {
-        const subscriptions = await getSubscriptionsByCoordinates(lat, lon, 2);
-
-        if (subscriptions.length === 0) {
-            console.log(`📢 Alert'ы готовы, но нет подписчиков`);
-            return;
-        }
-
-        // Создаём уведомления
-        const notifications = [];
-
-        if (alerts.frost.isFrost) {
-            notifications.push({
-                title: `🧊 Заморозки в ${alerts.city}!`,
-                body: `В ${alerts.frost.time} температура упадет до ${alerts.frost.temp}°C. Защитите растения!`,
-                tag: 'frost-alert',
-                requireInteraction: true,
-                type: 'frost'
-            });
-        }
-
-        if (alerts.watering.recommendation) {
-            notifications.push({
-                title: `${alerts.watering.emoji} Рекомендация по поливу`,
-                body: alerts.watering.recommendation,
-                tag: 'watering-alert',
-                requireInteraction: false,
-                type: alerts.rain.isRain ? 'rain' : (alerts.heat.isHeat ? 'heat' : 'watering')
-            });
-        }
-
-        // Отправляем все уведомления
-        let sent = 0;
-        let failed = 0;
-
-        for (const sub of subscriptions) {
-            try {
-                console.log(`📌 Обработка подписки user_id: ${sub.user_id}`);
-                
-                const parsedSubscription = typeof sub.subscription === 'string'
-                    ? JSON.parse(sub.subscription)
-                    : sub.subscription;
-
-                for (const notif of notifications) {
-                    await webpush.sendNotification(
-                        parsedSubscription,
-                        JSON.stringify({
-                            title: notif.title,
-                            body: notif.body,
-                            icon: '/garden-icon.png',
-                            badge: '/garden-badge.png',
-                            tag: notif.tag,
-                            requireInteraction: notif.requireInteraction,
-                            data: { city: alerts.city }
-                        })
-                    );
-
-                    // Сохраняем в БД для каждого пользователя
-                    if (sub.user_id) {
-                        console.log(`💾 Сохраняю уведомление для user_id: ${sub.user_id}`);
-                        await saveNotification(
-                            sub.user_id,
-                            notif.title,
-                            notif.body,
-                            notif.type,
-                            { city: alerts.city }
-                        );
-                    } else {
-                        console.log(`⚠️ user_id не найден в подписке!`);
-                    }
-                }
-                sent += notifications.length;
-            } catch (error) {
-                if (error.statusCode === 410) {
-                    console.log(`🗑️ Подписка истекла`);
-                }
-                failed += notifications.length;
-            }
-        }
-
-        console.log(`📤 Уведомлений отправлено: ${sent} успешно, ${failed} ошибок`);
-    } catch (error) {
-        console.error(`❌ Ошибка при отправке уведомлений: ${error.message}`);
-    }
-};
-
-// Запуск планировщика
 const scheduleAlertsCheck = (lat, lon) => {
     const cacheKey = `${Math.round(lat * 100) / 100},${Math.round(lon * 100) / 100}`;
 
@@ -244,23 +213,17 @@ const scheduleAlertsCheck = (lat, lon) => {
 
     const timezone = getTimezoneByCoordinates(lat, lon);
 
-    // Одна cron задача вместо двух!
     const task = cron.schedule(
-        '0 12 * * *',  // 12:00 каждый день
+        '0 12 * * *',
         async () => {
-            console.log(`⏰ Проверка всех alert'ов в 12:00 для ${cacheKey}`);
             await checkAndNotifyAllAlerts(lat, lon);
         },
-        {
-            timezone
-        }
+        { timezone }
     );
 
     alertsCronTasks.set(cacheKey, task);
-    console.log(`📅 Планировщик alert'ов запущен для ${cacheKey} (часовой пояс: ${timezone})`);
 };
 
-// API endpoint - единый для всех alert'ов
 exports.getAllAlerts = async (req, res, next) => {
     try {
         const { latitude, longitude } = req.query;
@@ -278,7 +241,6 @@ exports.getAllAlerts = async (req, res, next) => {
 
         const cacheKey = `${Math.round(lat * 100) / 100},${Math.round(lon * 100) / 100}`;
 
-        // Проверяем кэш
         if (alertsCache.has(cacheKey)) {
             const cached = alertsCache.get(cacheKey);
             return res.json({
@@ -287,10 +249,7 @@ exports.getAllAlerts = async (req, res, next) => {
             });
         }
 
-        // Запрашиваем
         const alerts = await checkAndNotifyAllAlerts(lat, lon);
-
-        // Запускаем планировщик
         scheduleAlertsCheck(lat, lon);
 
         res.json({
@@ -302,7 +261,6 @@ exports.getAllAlerts = async (req, res, next) => {
     }
 };
 
-// ТЕСТОВЫЙ эндпоинт - отправить alert'ы сразу (для разработки)
 exports.testAlert = async (req, res, next) => {
     try {
         const { latitude, longitude } = req.body;
@@ -314,11 +272,10 @@ exports.testAlert = async (req, res, next) => {
         const lat = parseFloat(latitude);
         const lon = parseFloat(longitude);
 
-        console.log(`🧪 ТЕСТОВЫЙ ЗАПРОС alert'ов для ${lat}, ${lon}`);
         const alerts = await checkAndNotifyAllAlerts(lat, lon);
 
         res.json({
-            message: 'Alert\'ы отправлены (тестовый режим)',
+            message: 'Alert\'ы отправлены',
             alerts
         });
     } catch (error) {
@@ -326,13 +283,11 @@ exports.testAlert = async (req, res, next) => {
     }
 };
 
-// Остановка всех планировщиков
 exports.stopAllAlertsSchedules = () => {
     alertsCronTasks.forEach((task) => {
         task.stop();
     });
     alertsCronTasks.clear();
-    console.log('🛑 Все планировщики alert\'ов остановлены');
 };
 
 exports.scheduleAlertsCheck = scheduleAlertsCheck;

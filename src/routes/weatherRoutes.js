@@ -1,15 +1,11 @@
 const express = require('express');
 const router = express.Router();
+const { validateCoordinates } = require('../middleware/validation');
 const { getWeather } = require('../controllers/weatherController');
 const weatherAlertsController = require('../controllers/weatherAlertsController');
 
-// GET /weather?latitude=55.75&longitude=37.62
-router.get('/weather', getWeather);
-
-// GET /alerts?latitude=55.75&longitude=37.62
-router.get('/alerts', weatherAlertsController.getAllAlerts);
-
-// POST /alerts/test (тестовый запрос)
-router.post('/alerts/test', weatherAlertsController.testAlert);
+router.get('/weather/', validateCoordinates, getWeather);
+router.get('/alerts', validateCoordinates, weatherAlertsController.getAllAlerts);
+router.post('/alerts/test', validateCoordinates, weatherAlertsController.testAlert);
 
 module.exports = router;
