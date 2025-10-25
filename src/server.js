@@ -64,7 +64,7 @@ app.use('/api', weatherLimiter, weatherRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/notifications', notificationsRoutes);
 
-// Health check endpoint (должен быть ДО 404 handler)
+// Health check endpoint
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -74,7 +74,7 @@ app.use((req, res) => {
     res.status(404).json({ message: 'Маршрут не найден' });
 });
 
-// Error handler ДОЛЖЕН быть ПОСЛЕДНИМ middleware (обязательно 4 параметра!)
+// Error handler
 app.use(errorHandler);
 
 const PORT = process.env.PORT;
